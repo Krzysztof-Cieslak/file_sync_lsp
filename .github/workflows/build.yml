@@ -18,9 +18,9 @@ jobs:
           UPLOAD_MODE: none
           TOOLCHAIN_VERSION: 1.83.0
       - name: Upload artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
-          name: Binary
+          name: file_sync_lsp
           path: |
             ${{ steps.compile.outputs.BUILT_ARCHIVE }}
             ${{ steps.compile.outputs.BUILT_CHECKSUM }}
