@@ -104,10 +104,9 @@ impl LanguageServer for Backend {
             text_document.text,
         );
         println!("Opened: {}", text_document.uri.as_str());
-        let doc = self
-            .documents
-            .insert(text_document.uri.clone(), document)
-            .unwrap();
+        
+        self.documents.insert(text_document.uri.clone(), document);
+        let doc = self.documents.get(&text_document.uri).unwrap();
 
         let sync_res = self.sync(&doc, &text_document.uri);
         if let Err(e) = sync_res {
