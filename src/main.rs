@@ -106,18 +106,18 @@ impl LanguageServer for Backend {
         println!("Opened: {}", text_document.uri.as_str());
         
         self.documents.insert(text_document.uri.clone(), document);
-        let doc = self.documents.get(&text_document.uri).unwrap();
 
-        let sync_res = self.sync(&doc, &text_document.uri);
-        if let Err(e) = sync_res {
-            self.client
-                .log_message(MessageType::ERROR, format!("Error syncing file: {}", e))
-                .await;
-        } else {
-            self.client
-                .log_message(MessageType::INFO, "file synced!")
-                .await;
-        }
+        // let doc = self.documents.get(&text_document.uri).unwrap();
+        // let sync_res = self.sync(&doc, &text_document.uri);
+        // if let Err(e) = sync_res {
+        //     self.client
+        //         .log_message(MessageType::ERROR, format!("Error syncing file: {}", e))
+        //         .await;
+        // } else {
+        //     self.client
+        //         .log_message(MessageType::INFO, "file synced!")
+        //         .await;
+        // }
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
@@ -142,37 +142,36 @@ impl LanguageServer for Backend {
     }
 }
 
-impl Backend {
-    fn sync(&self, doc: &FullTextDocument, uri: &Uri) -> io::Result<()> {
-        let content = doc.get_content(None);
-        let doc_hash = hash(&content);
-        let path = uri.path();
 
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .read(true)
-            .open(path.as_str())
-            .unwrap();
+fn sync_to_disk(doc: &FullTextDocument, uri: &Uri) -> io::Result<()> {
+    let content = doc.get_content(None);
+    let doc_hash = hash(&content);
+    let path = uri.path();
 
-        let mut buf = String::new();
-        file.read_to_string(&mut buf)?;
-        let file_hash = hash(&buf);
-        if doc_hash != file_hash {
-            file.write_all(content.as_bytes())?;
-        }
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .read(true)
+        .open(path.as_str())
+        .unwrap();
 
-        Ok(())
+    let mut buf = String::new();
+    file.read_to_string(&mut buf)?;
+    let file_hash = hash(&buf);
+    if doc_hash != file_hash {
+        file.write_all(content.as_bytes())?;
     }
+
+    Ok(())
 }
 
 async fn sync(documents: &Arc<DashMap<Uri, FullTextDocument>>) {
     for doc in documents.iter() {
         println!("Syncing: {}", doc.key().as_str());
-        // let res = sync(doc);
-        // if let Err(e) = res {
-        //     println!("Error syncing file: {}", e);
-        // }
+        let result = sync_to_disk(doc.value(), doc.key());
+        if let Err(e) = result {
+            eprintln!("  Error syncing file: {}", e);
+        }
     }
 }
 
@@ -206,7 +205,7 @@ async fn main() {
     
     
     task::spawn(async move {
-        let mut interval = time::interval(Duration::from_secs(10));
+        let mut interval = time::interval(Duration::from_secs(5));
 
         loop {
             interval.tick().await;
