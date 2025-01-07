@@ -2,6 +2,8 @@ use std::fs::OpenOptions;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io;
 use std::io::{Read, Write};
+use std::sync::Arc;
+use std::time::Duration;
 
 use dashmap::DashMap;
 use lsp_textdocument::FullTextDocument;
@@ -9,6 +11,7 @@ use lsp_types::Uri;
 use serde::{Deserialize, Serialize};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
+use tokio::{ task, time};
 use tower_lsp::jsonrpc::Result as LspResult;
 use tower_lsp::lsp_types::notification::Notification;
 use tower_lsp::lsp_types::*;
@@ -39,7 +42,7 @@ impl Notification for FileUpdatedNotification {
 
 struct Backend {
     client: Client,
-    documents: DashMap<Uri, FullTextDocument>,
+    documents: Arc<DashMap<Uri, FullTextDocument>>,
     root_uri: RwLock<Option<Uri>>,
 }
 
@@ -61,6 +64,7 @@ impl LanguageServer for Backend {
                 .map(|f| f.uri)
                 .or(params.root_uri);
 
+            println!("Initialized: {:?}", uri);
             let mut u = self.root_uri.write().await;
             *u = uri;
         }
@@ -99,7 +103,7 @@ impl LanguageServer for Backend {
             text_document.version,
             text_document.text,
         );
-
+        println!("Opened: {}", text_document.uri.as_str());
         let doc = self
             .documents
             .insert(text_document.uri.clone(), document)
@@ -119,6 +123,7 @@ impl LanguageServer for Backend {
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         let uri = params.text_document.uri;
+        println!("Changed: {}", uri.as_str());
         let doc = self.documents.get_mut(&uri);
         if let Some(mut doc) = doc {
             let doc = doc.value_mut();
@@ -130,7 +135,8 @@ impl LanguageServer for Backend {
         }
     }
 
-    async fn did_close(&self, _: DidCloseTextDocumentParams) {
+    async fn did_close(&self, params: DidCloseTextDocumentParams) {
+        println!("Closed: {}", params.text_document.uri.as_str());
         self.client
             .log_message(MessageType::INFO, "file closed!")
             .await;
@@ -161,6 +167,16 @@ impl Backend {
     }
 }
 
+async fn sync(documents: &Arc<DashMap<Uri, FullTextDocument>>) {
+    for doc in documents.iter() {
+        println!("Syncing: {}", doc.key().as_str());
+        // let res = sync(doc);
+        // if let Err(e) = res {
+        //     println!("Error syncing file: {}", e);
+        // }
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let mut args = std::env::args();
@@ -186,10 +202,25 @@ async fn main() {
         ),
     };
     let (read, write) = tokio::io::split(stream);
+    let documents = Arc::new(DashMap::new());
+    let sync_docs = documents.clone();
+    
+    
+    task::spawn(async move {
+        let mut interval = time::interval(Duration::from_secs(10));
+
+        loop {
+            interval.tick().await;
+            sync(&sync_docs).await;
+        }
+    });
+    
     let (service, socket) = LspService::new(|client| Backend {
         client,
-        documents: DashMap::new(),
+        documents: documents.clone(),
         root_uri: RwLock::new(None),
     });
+
+
     Server::new(read, write, socket).serve(service).await;
 }
