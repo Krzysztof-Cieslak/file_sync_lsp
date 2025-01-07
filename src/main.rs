@@ -152,14 +152,16 @@ fn sync_to_disk(doc: &FullTextDocument, uri: &Uri) -> io::Result<()> {
         .write(true)
         .create(true)
         .read(true)
-        .open(path.as_str())
-        .unwrap();
+        .truncate(true)
+        .open(path.as_str())?;
 
     let mut buf = String::new();
     file.read_to_string(&mut buf)?;
     let file_hash = hash(&buf);
     if doc_hash != file_hash {
+        println!("  Writing changes to disk");
         file.write_all(content.as_bytes())?;
+        file.flush()?;
     }
     else {
         println!("  No changes to sync");
