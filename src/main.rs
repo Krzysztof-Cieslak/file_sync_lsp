@@ -161,13 +161,18 @@ fn sync_to_disk(doc: &FullTextDocument, uri: &Uri) -> io::Result<()> {
     if doc_hash != file_hash {
         file.write_all(content.as_bytes())?;
     }
+    else {
+        println!("  No changes to sync");
+    }
 
     Ok(())
 }
 
 async fn sync(documents: &Arc<DashMap<Uri, FullTextDocument>>) {
     for doc in documents.iter() {
-        println!("Syncing: {}", doc.key().as_str());
+        let d = doc.value();
+        let len = d.content_len();
+        println!("Syncing: {}, length: {}", doc.key().as_str(), len);
         let result = sync_to_disk(doc.value(), doc.key());
         if let Err(e) = result {
             eprintln!("  Error syncing file: {}", e);
