@@ -9,7 +9,7 @@ use dashmap::DashMap;
 use lsp_textdocument::FullTextDocument;
 use lsp_types::Uri;
 use serde::{Deserialize, Serialize};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 use tokio::sync::RwLock;
 use tokio::{ task, time};
 use tower_lsp::jsonrpc::Result as LspResult;
@@ -184,32 +184,8 @@ async fn sync(documents: &Arc<DashMap<Uri, FullTextDocument>>) {
 
 #[tokio::main]
 async fn main() {
-    let mut args = std::env::args();
-    let stream = match args.nth(1).as_deref() {
-        None => {
-            // If no argument is supplied (args is just the program name), then
-            // we presume that the client has opened the TCP port and is waiting
-            // for us to connect. This is the connection pattern used by clients
-            // built with vscode-langaugeclient.
-            TcpStream::connect("127.0.0.1:1910").await.unwrap()
-        }
-        Some("--listen") => {
-            // If the `--listen` argument is supplied, then the roles are
-            // reversed: we need to start a server and wait for the client to
-            // connect.
-            let listener = TcpListener::bind("127.0.0.1:1910").await.unwrap();
-            let (stream, _) = listener.accept().await.unwrap();
-            stream
-        }
-        Some(arg) => panic!(
-            "Unrecognized argument: {}. Use --listen to listen for connections.",
-            arg
-        ),
-    };
-    let (read, write) = tokio::io::split(stream);
     let documents = Arc::new(DashMap::new());
     let sync_docs = documents.clone();
-    
     
     task::spawn(async move {
         let mut interval = time::interval(Duration::from_secs(5));
@@ -220,12 +196,18 @@ async fn main() {
         }
     });
     
-    let (service, socket) = LspService::new(|client| Backend {
-        client,
-        documents: documents.clone(),
-        root_uri: RwLock::new(None),
-    });
-
-
-    Server::new(read, write, socket).serve(service).await;
+    
+    let listener = TcpListener::bind("127.0.0.1:1910").await.unwrap();
+    loop {
+        let (stream, _) = listener.accept().await.unwrap();
+        println!("Accepted connection from {:?}", stream.peer_addr().unwrap());
+        let (service, socket) = LspService::new(|client| Backend {
+            client,
+            documents: documents.clone(),
+            root_uri: RwLock::new(None),
+        });
+        let (read, write) = tokio::io::split(stream);
+        Server::new(read, write, socket).serve(service).await;
+        println!("Connection closed");
+    }
 }
