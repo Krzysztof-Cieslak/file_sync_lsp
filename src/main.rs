@@ -11,6 +11,7 @@ use lsp_types::Uri;
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
+use tokio::task::JoinHandle;
 use tokio::{ task, time};
 use tower_lsp::jsonrpc::Result as LspResult;
 use tower_lsp::lsp_types::notification::Notification;
@@ -198,16 +199,31 @@ async fn main() {
     
     
     let listener = TcpListener::bind("127.0.0.1:1910").await.unwrap();
+    let active_task = Arc::new(RwLock::new(None::<JoinHandle<()>>));
+
     loop {
+        println!("Waiting for next connection...");
         let (stream, _) = listener.accept().await.unwrap();
         println!("Accepted connection from {:?}", stream.peer_addr().unwrap());
-        let (service, socket) = LspService::new(|client| Backend {
-            client,
-            documents: documents.clone(),
-            root_uri: RwLock::new(None),
+
+        // Cancel and discard the old task if any
+        if let Some(handle) = active_task.write().await.take() {
+            handle.abort();
+            println!("Canceled previous connection handle");
+        }
+
+        let documents = documents.clone();
+        // Spawn a new task for the current connection
+        let handle = tokio::spawn(async move {
+            let (service, socket) = LspService::new(|client| Backend {
+                client,
+                documents,
+                root_uri: RwLock::new(None),
+            });
+            let (read, write) = tokio::io::split(stream);
+            Server::new(read, write, socket).serve(service).await;
         });
-        let (read, write) = tokio::io::split(stream);
-        Server::new(read, write, socket).serve(service).await;
-        println!("Connection closed");
+
+        *active_task.write().await = Some(handle);
     }
 }
