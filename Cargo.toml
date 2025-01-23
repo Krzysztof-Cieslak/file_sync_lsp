@@ -7,6 +7,7 @@ edition = "2021"
 dashmap = "6.1.0"
 lsp-textdocument = "0.4.0"
 lsp-types = "0.97.0"
+notify = "8.0.0"
 serde = "1.0.215"
 tokio = { version = "1.42.0", features = ["full"] }
 tower-lsp = { git = "https://github.com/tower-lsp/tower-lsp" }

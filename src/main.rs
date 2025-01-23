@@ -1,18 +1,19 @@
 use std::fs::OpenOptions;
-use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io;
 use std::io::{Read, Write};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
 use dashmap::DashMap;
 use lsp_textdocument::FullTextDocument;
 use lsp_types::Uri;
+use notify::{Error, Event, Watcher};
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
-use tokio::{ task, time};
+use tokio::time;
 use tower_lsp::jsonrpc::Result as LspResult;
 use tower_lsp::lsp_types::notification::Notification;
 use tower_lsp::lsp_types::*;
@@ -41,16 +42,31 @@ impl Notification for FileUpdatedNotification {
     const METHOD: &'static str = "$/fileUpdated";
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+struct BranchChangedNotificationParams {
+    branch: String,
+}
+
+impl BranchChangedNotificationParams {
+    fn new(branch: impl Into<String>) -> Self {
+        BranchChangedNotificationParams {
+            branch: branch.into(),
+        }
+    }
+}
+
+enum BranchChangedNotification {}
+
+impl Notification for BranchChangedNotification {
+    type Params = BranchChangedNotificationParams;
+
+    const METHOD: &'static str = "$/branchChanged";
+}
+
 struct Backend {
     client: Client,
     documents: Arc<DashMap<Uri, FullTextDocument>>,
     root_uri: RwLock<Option<Uri>>,
-}
-
-fn hash<T: Hash>(t: &T) -> u64 {
-    let mut s = DefaultHasher::new();
-    t.hash(&mut s);
-    s.finish()
 }
 
 #[tower_lsp::async_trait]
@@ -185,20 +201,108 @@ async fn sync(documents: &Arc<DashMap<Uri, FullTextDocument>>) {
     }
 }
 
+pub struct GitBranchWatcher {
+    client: Arc<RwLock<Option<Client>>>,
+    head_path: &'static Path,
+}
+
+impl GitBranchWatcher {
+    pub fn new(client: Arc<RwLock<Option<Client>>>) -> Self {
+        Self {
+            client,
+            head_path: Path::new(".git/HEAD"),
+        }
+    }
+
+    pub fn start(&self) -> notify::Result<()> {
+        let watcher_client = self.client.clone();
+        let head_path = self.head_path;
+        
+        let mut watcher = notify::recommended_watcher(move |res: Result<Event, Error>| {
+            let cl = watcher_client.clone();
+            match res {
+                Ok(event) => {
+                    tokio::spawn(async move {
+                        if let Err(e) = Self::handle_head_change(cl, head_path).await {
+                            eprintln!("Failed to handle HEAD change: {}", e);
+                        }
+                    });
+                    println!("watch event: {:?}", event.kind);
+                }
+                Err(e) => eprintln!("watch error: {}", e),
+            }
+        })?;
+
+        watcher.watch(self.head_path, notify::RecursiveMode::NonRecursive)?;
+        Ok(())
+    }
+
+    async fn handle_head_change(
+        client: Arc<RwLock<Option<Client>>>,
+        head_path: &Path,
+    ) -> io::Result<()> {
+        let mut file = OpenOptions::new().read(true).open(head_path)?;
+        let mut buf = String::new();
+        file.read_to_string(&mut buf)?;
+
+        if let Some(branch) = buf.strip_prefix("ref: ") {
+            let branch = branch.trim();
+            let client_guard = client.read().await;
+            if let Some(client) = client_guard.as_ref() {
+                client
+                    .send_notification::<BranchChangedNotification>(
+                        BranchChangedNotificationParams::new(branch),
+                    )
+                    .await;
+            }
+        }
+
+        Ok(())
+    }
+}
+
+pub struct ToDiskSyncer {
+    interval: time::Interval,
+    documents: Arc<DashMap<Uri, FullTextDocument>>,
+}
+
+impl ToDiskSyncer {
+    pub fn new(documents: Arc<DashMap<Uri, FullTextDocument>>) -> Self {
+        let interval = time::interval(Duration::from_secs(5));
+        Self {
+            interval,
+            documents,
+        }
+    }
+
+    pub async fn run(&mut self) {
+        loop {
+            self.interval.tick().await;
+            sync(&self.documents).await;
+        }
+    }
+    
+    pub fn start(documents: Arc<DashMap<Uri, FullTextDocument>>) -> JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut syncer = Self::new(documents);
+            syncer.run().await;
+        })
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let documents = Arc::new(DashMap::new());
-    let sync_docs = documents.clone();
-    
-    task::spawn(async move {
-        let mut interval = time::interval(Duration::from_secs(5));
+    let client = Arc::new(RwLock::new(None::<Client>));
 
-        loop {
-            interval.tick().await;
-            sync(&sync_docs).await;
-        }
-    });
-    
+    //Initialize and start the file syncer
+    ToDiskSyncer::start(documents.clone());
+
+    // Initialize and start the git watcher
+    let watcher = GitBranchWatcher::new(client.clone());
+    if let Err(e) = watcher.start() {
+        eprintln!("Failed to start git watcher: {}", e);
+    }
     
     let listener = TcpListener::bind("127.0.0.1:1910").await.unwrap();
     let active_task = Arc::new(RwLock::new(None::<JoinHandle<()>>));
@@ -215,6 +319,7 @@ async fn main() {
         }
 
         let documents = documents.clone();
+        let cl = client.clone();
         // Spawn a new task for the current connection
         let handle = tokio::spawn(async move {
             let (service, socket) = LspService::new(|client| Backend {
@@ -222,10 +327,10 @@ async fn main() {
                 documents,
                 root_uri: RwLock::new(None),
             });
+            *cl.write().await = Some(service.inner().client.clone());
             let (read, write) = tokio::io::split(stream);
             Server::new(read, write, socket).serve(service).await;
         });
-
         *active_task.write().await = Some(handle);
     }
 }
