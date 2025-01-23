@@ -146,26 +146,28 @@ impl LanguageServer for Backend {
 
 fn sync_to_disk(doc: &FullTextDocument, uri: &Uri) -> io::Result<()> {
     let content = doc.get_content(None);
-    let doc_hash = hash(&content);
     let path = uri.path();
 
-    let mut file = OpenOptions::new()
+    let mut file_read = OpenOptions::new()
         .write(true)
         .create(true)
         .read(true)
-        .truncate(true)
         .open(path.as_str())?;
 
     let mut buf = String::new();
-    file.read_to_string(&mut buf)?;
-    let file_hash = hash(&buf);
-    if doc_hash != file_hash {
-        println!("  Writing changes to disk");
-        file.write_all(content.as_bytes())?;
-        file.flush()?;
-    }
-    else {
-        println!("  No changes to sync");
+    file_read.read_to_string(&mut buf)?;
+    if content != buf {
+        let mut file_write = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .read(true)
+            .truncate(true)
+            .open(path.as_str())?;
+        println!("  - Writing changes to disk");
+        file_write.write_all(content.as_bytes())?;
+        file_write.flush()?;
+    } else {
+        println!("  - No changes to sync");
     }
 
     Ok(())
