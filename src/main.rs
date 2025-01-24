@@ -8,7 +8,8 @@ use std::time::Duration;
 use dashmap::DashMap;
 use lsp_textdocument::FullTextDocument;
 use lsp_types::Uri;
-use notify::{Error, Event, Watcher};
+use notify::event::{ModifyKind, RenameMode};
+use notify::{Error, Event, EventKind, Watcher};
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
@@ -195,6 +196,7 @@ impl GitBranchWatcher {
                     Some((pb, Ok(_))) => {Some(pb.clone())},
                     _ => None,
                 };
+                println!("[GitBranchWatcher] Processing head change: {:?}", path_to_process);
 
                 if let Some(path) = path_to_process {
                     if let Err(e) = Self::handle_head_change(cl.clone(), &path).await {
@@ -221,15 +223,15 @@ impl GitBranchWatcher {
     
                 // Create a new watcher
                 if let Some(new_uri) = rx.borrow().as_ref().cloned() {
-                    let p = PathBuf::new().join(new_uri.path().as_str()).join(".git/HEAD");
+                    let p = PathBuf::new().join(new_uri.path().as_str()).join(".git");
                     println!("[GitBranchWatcher] Watching {:?}", p);
                     let pb = p.clone();
                     match notify::recommended_watcher(move |res: Result<Event, Error>| {
-                        println!("[GitBranchWatcher] Received watch event");
                         match res {
                             Ok(event) => {
-                                if event.kind.is_modify() {
-                                    let _ = res_tx.send(Some((p.clone(), Ok(event))));
+                                if event.kind == EventKind::Modify(ModifyKind::Name(RenameMode::Both)) && event.paths.iter().any(|p| p.ends_with("HEAD")) {
+                                    let head_path = p.join("HEAD");
+                                    let _ = res_tx.send(Some((head_path.clone(), Ok(event))));
                                 }
                             }
                             Err(e) => println!("[GitBranchWatcher] watch error: {}", e),
